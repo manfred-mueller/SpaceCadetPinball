@@ -14,33 +14,35 @@ jobs:
       TRIPLET: x64-windows
       BUILD_TYPE: Release
       RUNTIME_DIR: ${{ github.workspace }}\build\bin
+      # VCPKG Release 2025.08.27 (voller SHA):
+      VCPKG_BASELINE: 120deac3062162151622ca4860575a33844ba10b
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # vcpkg.json ohne Here-String erzeugen
-      - name: Ensure vcpkg.json
+      # Manifest inkl. builtin-baseline erzeugen
+      - name: Ensure vcpkg.json (with builtin-baseline)
         shell: pwsh
         run: |
-          if (-not (Test-Path "vcpkg.json")) {
-            $obj = [ordered]@{
-              name = "spacecadetpinball"
-              "version-string" = "0"
-              dependencies = @("sdl2","sdl2-mixer")
-            }
-            $json = $obj | ConvertTo-Json -Depth 3
-            Set-Content -Path "vcpkg.json" -Value $json -Encoding utf8
+          $obj = [ordered]@{
+            name = "spacecadetpinball"
+            "version-string" = "0"
+            "builtin-baseline" = "${{ env.VCPKG_BASELINE }}"
+            dependencies = @("sdl2","sdl2-mixer")
           }
+          $json = $obj | ConvertTo-Json -Depth 4
+          Set-Content -Path "vcpkg.json" -Value $json -Encoding utf8
+          Get-Content vcpkg.json
 
+      # vcpkg einrichten (auf exakt denselben Commit pinnen)
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@v11
         with:
+          vcpkgGitCommitId: ${{ env.VCPKG_BASELINE }}
           runVcpkgInstall: true
-          vcpkgJsonGlob: |
-            vcpkg.json
+          vcpkgJsonGlob: vcpkg.json
 
-      # 7-Zip absichern (ist meist schon da)
       - name: Ensure 7-Zip
         shell: pwsh
         run: |
@@ -84,36 +86,22 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path iso\extracted | Out-Null
           7z x "iso\xp.iso" -o"iso\extracted" -ir!'I386\PINBALL\*'
-          if (-not (Test-Path "iso\extracted\I386\PINBALL")) {
-            throw "PINBALL-Ordner nicht in ISO gefunden."
-          }
+          if (-not (Test-Path "iso\extracted\I386\PINBALL")) { throw "PINBALL-Ordner nicht in ISO gefunden." }
 
-      # -------- Dist-Ordner erstellen & DLLs beilegen ----------
+      # -------- Dist-Ordner & DLLs ----------
       - name: Prepare dist folder
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-
-          # EXE
           Copy-Item "${{ env.RUNTIME_DIR }}\SpaceCadetPinball.exe" dist\SpaceCadetPinball.exe
-
-          # Original-Ressourcen
           New-Item -ItemType Directory -Force -Path dist\PINBALL | Out-Null
           Copy-Item "iso\extracted\I386\PINBALL\*" dist\PINBALL\ -Recurse -Force
-
-          # Kern-Ressourcen zusätzlich neben die EXE spiegeln
           @('PINBALL.DLL','TABLES.DAT','SOUNDS.DAT','PINBALL.MID') | ForEach-Object {
-            $src = "dist\PINBALL\$_"
-            if (Test-Path $src) { Copy-Item $src dist\ -Force }
+            $src = "dist\PINBALL\$_"; if (Test-Path $src) { Copy-Item $src dist\ -Force }
           }
-
-          # vcpkg-DLLs (SDL2, SDL2_mixer, ggf. weitere) mitliefern
           $vcpkgBin = Join-Path $Env:VCPKG_ROOT "installed\${{ env.TRIPLET }}\bin"
-          if (Test-Path $vcpkgBin) {
-            Copy-Item "$vcpkgBin\*.dll" dist\ -Force
-          }
+          if (Test-Path $vcpkgBin) { Copy-Item "$vcpkgBin\*.dll" dist\ -Force }
 
-      # -------- Artefakt hochladen ----------
       - name: Upload artifact (Windows exe + resources)
         uses: actions/upload-artifact@v4
         with:
