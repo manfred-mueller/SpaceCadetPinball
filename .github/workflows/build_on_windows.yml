@@ -1,0 +1,135 @@
+name: Build (Windows) + Extract XP Pinball
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    env:
+      TRIPLET: x64-windows
+      BUILD_TYPE: Release
+      RUNTIME_DIR: ${{ github.workspace }}\build\bin
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # vcpkg einrichten und SDL2 + SDL2_mixer installieren
+      - name: Ensure vcpkg.json
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "vcpkg.json")) {
+            @'
+            {
+              "name": "spacecadetpinball",
+              "version-string": "0",
+              "dependencies": [
+                "sdl2",
+                "sdl2-mixer"
+              ]
+            }
+            '@ | Out-File -FilePath "vcpkg.json" -Encoding utf8
+          }
+
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          # Fester Commit = reproduzierbar; kann bei Bedarf aktualisiert werden
+          vcpkgGitCommitId: 9f7d8c6f2e1e9a1b9a3a2f7b4f2fe3e1f2c3b4a5
+          runVcpkgInstall: true
+          vcpkgJsonGlob: |
+            vcpkg.json
+
+      # 7-Zip ist meist vorinstalliert; wir sichern es ab
+      - name: Ensure 7-Zip
+        shell: pwsh
+        run: |
+          if (-not (Get-Command 7z.exe -ErrorAction SilentlyContinue)) {
+            choco install 7zip -y
+          }
+          7z i | Select-String "7-Zip" | Out-String
+
+      # -------- Build ----------
+      - name: Configure (CMake)
+        shell: pwsh
+        run: |
+          cmake -S . -B build `
+            -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} `
+            -DCMAKE_RUNTIME_OUTPUT_DIRECTORY="${{ env.RUNTIME_DIR }}" `
+            -DCMAKE_TOOLCHAIN_FILE="$Env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=${{ env.TRIPLET }}
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel
+
+      - name: Verify binary path
+        shell: pwsh
+        run: |
+          Get-ChildItem -Recurse "${{ env.RUNTIME_DIR }}"
+          if (-not (Test-Path "${{ env.RUNTIME_DIR }}\SpaceCadetPinball.exe")) {
+            Write-Error "EXE nicht gefunden: $Env:RUNTIME_DIR\SpaceCadetPinball.exe"
+          }
+
+      # -------- ISO laden & PINBALL extrahieren ----------
+      - name: Download Windows XP ISO (DE SP3 VL)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path iso | Out-Null
+          Invoke-WebRequest `
+            -Uri "https://archive.org/download/windows-xp-all-sp-msdn-iso-files-en-de-ru-tr-x86-x64/de_windows_xp_professional_with_service_pack_3_x86_cd_vl_x14-73985.iso" `
+            -OutFile "iso\xp.iso"
+
+      - name: Extract PINBALL directory from ISO
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path iso\extracted | Out-Null
+          # Nur I386\PINBALL\* herausziehen
+          7z x "iso\xp.iso" -o"iso\extracted" -ir!'I386\PINBALL\*'
+          if (-not (Test-Path "iso\extracted\I386\PINBALL")) {
+            Write-Error "PINBALL-Ordner nicht in ISO gefunden."
+          }
+
+      # -------- Dist-Ordner erstellen & DLLs beilegen ----------
+      - name: Prepare dist folder
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+
+          # EXE
+          Copy-Item "${{ env.RUNTIME_DIR }}\SpaceCadetPinball.exe" dist\SpaceCadetPinball.exe
+
+          # Original-Ressourcen
+          New-Item -ItemType Directory -Force -Path dist\PINBALL | Out-Null
+          Copy-Item "iso\extracted\I386\PINBALL\*" dist\PINBALL\ -Recurse -Force
+
+          # Praktisch: die 4 Kern-Ressourcen auch direkt neben die EXE spiegeln
+          @('PINBALL.DLL','TABLES.DAT','SOUNDS.DAT','PINBALL.MID') | ForEach-Object {
+            $src = "dist\PINBALL\$_"
+            if (Test-Path $src) { Copy-Item $src dist\ -Force }
+          }
+
+          # vcpkg-DLLs (SDL2, SDL2_mixer, Abhängigkeiten) mitliefern
+          $vcpkgBin = Join-Path $Env:VCPKG_ROOT "installed\${{ env.TRIPLET }}\bin"
+          if (Test-Path $vcpkgBin) {
+            Copy-Item "$vcpkgBin\*.dll" dist\ -Force
+          }
+
+      # Optionaler Diagnose-Schritt: zeige abhängige DLLs
+      # - name: Dumpbin depends (optional)
+      #   shell: pwsh
+      #   run: |
+      #     & "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" /DEPENDENTS dist\SpaceCadetPinball.exe
+
+      # -------- Artefakt hochladen ----------
+      - name: Upload artifact (Windows exe + resources)
+        uses: actions/upload-artifact@v4
+        with:
+          name: SpaceCadetPinball-Windows-Release-with-XP-resources
+          path: dist\**
+          if-no-files-found: error
