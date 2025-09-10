@@ -63,7 +63,7 @@ jobs:
       # -------- Workaround: DLLs an erwarteten Ort spiegeln ----------
       # Das Projekt kopiert post-build aus build\vcpkg_installed\...\lib\SDL2*.dll.
       # vcpkg legt DLLs aber nach ...\bin\. Wir spiegeln sie vor dem Build in ...\lib.
-      - name: Workaround: place SDL DLLs where post-build expects them
+      - name: Workaround (place SDL DLLs where post-build expects them)
         shell: pwsh
         run: |
           $trip = '${{ env.TRIPLET }}'
