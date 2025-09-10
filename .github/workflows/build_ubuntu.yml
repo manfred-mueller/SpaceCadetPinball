@@ -1,0 +1,72 @@
+name: Build (Ubuntu) + Extract XP Pinball
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-ubuntu:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build & runtime deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake \
+            libsdl2-dev libsdl2-mixer-dev \
+            p7zip-full wget
+
+      # ---------- Build SpaceCadetPinball ----------
+      - name: Configure (CMake)
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      # ---------- Fetch XP ISO & extract only PINBALL ----------
+      - name: Download Windows XP ISO (DE SP3 VL)
+        run: |
+          mkdir -p iso
+          wget -O iso/xp.iso \
+            "https://archive.org/download/windows-xp-all-sp-msdn-iso-files-en-de-ru-tr-x86-x64/de_windows_xp_professional_with_service_pack_3_x86_cd_vl_x14-73985.iso"
+
+      - name: Extract PINBALL directory from ISO
+        working-directory: iso
+        run: |
+          mkdir -p extracted
+          # Nur den PINBALL-Ordner extrahieren. 7z benutzt Backslashes in Pfadmustern.
+          7z x xp.iso -oextracted -ir!'I386\PINBALL\*'
+          # Ergebnis liegt jetzt unter iso/extracted/I386/PINBALL/...
+
+      # ---------- Stage distribution folder ----------
+      - name: Prepare dist folder
+        run: |
+          mkdir -p dist
+          # Binary (Linux)
+          cp build/SpaceCadetPinball dist/
+          chmod +x dist/SpaceCadetPinball || true
+
+          # Original-Ressourcen neben das Binary legen
+          # (falls die ISO die Dateien in Groß-/Kleinschreibung variiert, kopieren wir alles)
+          mkdir -p dist/PINBALL
+          cp -r iso/extracted/I386/PINBALL/* dist/PINBALL/ || true
+
+          # Für Bequemlichkeit: Kopiere die wichtigsten Dateien zusätzlich direkt neben das Binary
+          for f in PINBALL.DLL TABLES.DAT SOUNDS.DAT PINBALL.MID; do
+            if [ -f "dist/PINBALL/$f" ]; then cp "dist/PINBALL/$f" dist/; fi
+          done
+
+      # ---------- Upload combined artifact ----------
+      - name: Upload artifact (binary + resources)
+        uses: actions/upload-artifact@v4
+        with:
+          name: SpaceCadetPinball-Ubuntu-Release-with-XP-resources
+          path: |
+            dist/**
+          if-no-files-found: error
