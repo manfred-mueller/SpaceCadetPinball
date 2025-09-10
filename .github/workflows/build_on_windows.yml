@@ -14,14 +14,14 @@ jobs:
       TRIPLET: x64-windows
       BUILD_TYPE: Release
       RUNTIME_DIR: ${{ github.workspace }}\build\bin
-      # VCPKG Release 2025.08.27 (voller SHA):
+      # vcpkg baseline (Commit aus microsoft/vcpkg)
       VCPKG_BASELINE: 120deac3062162151622ca4860575a33844ba10b
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Manifest inkl. builtin-baseline erzeugen
+      # Manifest inkl. Baseline erzeugen (erforderlich für vcpkg)
       - name: Ensure vcpkg.json (with builtin-baseline)
         shell: pwsh
         run: |
@@ -33,9 +33,9 @@ jobs:
           }
           $json = $obj | ConvertTo-Json -Depth 4
           Set-Content -Path "vcpkg.json" -Value $json -Encoding utf8
+          Write-Host "vcpkg.json:"
           Get-Content vcpkg.json
 
-      # vcpkg einrichten (auf exakt denselben Commit pinnen)
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@v11
         with:
@@ -48,7 +48,7 @@ jobs:
         run: |
           if (-not (Get-Command 7z.exe -ErrorAction SilentlyContinue)) { choco install 7zip -y }
 
-      # -------- Build ----------
+      # -------- Configure ----------
       - name: Configure (CMake)
         shell: pwsh
         run: |
@@ -60,6 +60,29 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE="$Env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
             -DVCPKG_TARGET_TRIPLET=${{ env.TRIPLET }}
 
+      # -------- Workaround: DLLs an erwarteten Ort spiegeln ----------
+      # Das Projekt kopiert post-build aus build\vcpkg_installed\...\lib\SDL2*.dll.
+      # vcpkg legt DLLs aber nach ...\bin\. Wir spiegeln sie vor dem Build in ...\lib.
+      - name: Workaround: place SDL DLLs where post-build expects them
+        shell: pwsh
+        run: |
+          $trip = '${{ env.TRIPLET }}'
+          $src = Join-Path $Env:VCPKG_ROOT "installed\$trip\bin"
+          $dst = "${{ github.workspace }}\build\vcpkg_installed\$trip\lib"
+          New-Item -ItemType Directory -Force -Path $dst | Out-Null
+
+          $dlls = @('SDL2.dll','SDL2_mixer.dll')
+          foreach ($d in $dlls) {
+            $s = Join-Path $src $d
+            if (Test-Path $s) {
+              Copy-Item $s $dst -Force
+              Write-Host "Spiegel: $s  ->  $dst"
+            } else {
+              Write-Warning "Erwartete DLL nicht gefunden: $s"
+            }
+          }
+
+      # -------- Build ----------
       - name: Build
         shell: pwsh
         run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel
@@ -93,12 +116,20 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
+
+          # EXE
           Copy-Item "${{ env.RUNTIME_DIR }}\SpaceCadetPinball.exe" dist\SpaceCadetPinball.exe
+
+          # Original-Ressourcen
           New-Item -ItemType Directory -Force -Path dist\PINBALL | Out-Null
           Copy-Item "iso\extracted\I386\PINBALL\*" dist\PINBALL\ -Recurse -Force
+
+          # Kern-Ressourcen zusätzlich neben die EXE spiegeln
           @('PINBALL.DLL','TABLES.DAT','SOUNDS.DAT','PINBALL.MID') | ForEach-Object {
             $src = "dist\PINBALL\$_"; if (Test-Path $src) { Copy-Item $src dist\ -Force }
           }
+
+          # vcpkg-DLLs (SDL2, SDL2_mixer, ggf. weitere) mitliefern
           $vcpkgBin = Join-Path $Env:VCPKG_ROOT "installed\${{ env.TRIPLET }}\bin"
           if (Test-Path $vcpkgBin) { Copy-Item "$vcpkgBin\*.dll" dist\ -Force }
 
